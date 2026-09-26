@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and static security checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e '.[deploy,dev]' ansible-lint bandit
+      - name: ansible-lint
+        run: cd ansible && ansible-lint --offline site.yml
+      - name: Ansible syntax check
+        run: |
+          printf 'all:\n  children:\n    bibvpn_nodes:\n      hosts: {}\n    bibvpn_hub:\n      hosts: {}\n' > /tmp/inventory.yml
+          cd ansible && ansible-playbook -i /tmp/inventory.yml site.yml --syntax-check
+      - name: bandit (medium and above)
+        run: bandit -q -r bibvpn -ll
+      - name: Shell scripts parse
+        run: for f in scripts/*.sh tests/integration/run.sh; do bash -n "$f"; done
+
+  unit:
+    name: Unit tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: pip install -e '.[dev,qr]'
+      - name: Install pinned Xray (rendered configs are validated by the real binary)
+        run: |
+          scripts/install-xray.sh "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "XRAY_LOCATION_ASSET=$HOME/.local/bin" >> "$GITHUB_ENV"
+      - name: pytest
+        # No skips allowed in CI: the Xray-dependent tests must run.
+        run: |
+          python -m pytest -q -rs | tee pytest.log
+          ! grep -q "skipped" pytest.log
+
+  integration:
+    name: Integration (deploy node + hub into systemd containers)
+    needs: [lint, unit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -e '.[deploy,dev]'
+      - name: Install pinned Xray (client side of the tunnel tests)
+        run: |
+          scripts/install-xray.sh "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run
+        run: tests/integration/run.sh
