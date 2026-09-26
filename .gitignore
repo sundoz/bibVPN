@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# bibVPN: local state with secrets (keys, user UUIDs) and rendered configs
+state/
+build/
+*.retry

@@ -1,0 +1,95 @@
+- name: Supported OS only
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == "Debian"
+    fail_msg: "bibVPN supports Debian 12+/Ubuntu 22.04+ servers"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable automatic security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+
+- name: Network tuning (BBR congestion control, bigger buffers)
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-bibvpn.conf
+    content: |
+      net.core.default_qdisc = fq
+      net.ipv4.tcp_congestion_control = bbr
+      net.ipv4.tcp_fastopen = 3
+      net.ipv4.tcp_mtu_probing = 1
+      net.core.rmem_max = 16777216
+      net.core.wmem_max = 16777216
+      net.ipv4.tcp_rmem = 4096 87380 16777216
+      net.ipv4.tcp_wmem = 4096 65536 16777216
+      fs.file-max = 1048576
+    mode: "0644"
+  notify: Apply sysctl
+
+- name: Firewall - current state
+  ansible.builtin.command: ufw status verbose
+  register: common_ufw_status
+  changed_when: false
+
+# SSH is allowed before the firewall is enabled, so we never cut ourselves off. No `ufw limit`:
+# it rejects Ansible's burst of connections; brute force is handled by fail2ban.
+- name: Firewall - allow SSH and proxy ports
+  ansible.builtin.command: "ufw {{ item }}"
+  loop: "{{ [common_ssh_rule] + common_proxy_rules }}"
+  vars:
+    common_ssh_rule: "allow {{ ansible_port | default(22) }}/tcp"
+    common_proxy_rules: "{{ xray_public_ports | map('string') | map('regex_replace', '^(.*)$', 'allow \\1/tcp') | list }}"
+  register: common_ufw_rule
+  changed_when: "'Skipping' not in common_ufw_rule.stdout"
+
+- name: Firewall - deny everything else inbound
+  ansible.builtin.command: ufw default deny incoming
+  when: "'deny (incoming)' not in common_ufw_status.stdout"
+  changed_when: true
+
+- name: Firewall - enable
+  ansible.builtin.command: ufw --force enable
+  when: "'Status: active' not in common_ufw_status.stdout"
+  changed_when: true
+
+- name: SSH - find authorized keys of the deploy user
+  ansible.builtin.stat:
+    path: "{{ '/root' if ansible_user == 'root' else '/home/' + ansible_user }}/.ssh/authorized_keys"
+  register: common_authorized_keys
+  when: common_ssh_disable_passwords
+
+- name: SSH - refuse to disable passwords without an authorized key (would lock you out)
+  ansible.builtin.assert:
+    that:
+      - common_authorized_keys.stat.exists
+      - common_authorized_keys.stat.size > 0
+    fail_msg: >-
+      No SSH key in authorized_keys for {{ ansible_user }}. Run `ssh-copy-id` first,
+      or set common_ssh_disable_passwords=false.
+  when: common_ssh_disable_passwords
+
+- name: SSH - key-only login
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/90-bibvpn.conf
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+    mode: "0644"
+  when: common_ssh_disable_passwords
+  notify: Reload sshd
+
+- name: Fail2ban running
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true

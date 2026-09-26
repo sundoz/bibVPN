@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bibvpn"
+version = "0.1.0"
+description = "Self-hosted censorship-resistant proxy: Xray VLESS+Reality nodes managed from one CLI"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=41",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+qr = ["qrcode>=7"]
+deploy = ["ansible-core>=2.16"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+bibvpn = "bibvpn.cli:main"
+
+[tool.setuptools]
+packages = ["bibvpn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

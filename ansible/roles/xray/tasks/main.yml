@@ -1,0 +1,88 @@
+- name: Resolve release asset for this CPU
+  ansible.builtin.set_fact:
+    xray_arch: "{{ xray_arch_map[ansible_facts.architecture] }}"
+    xray_release_dir: "{{ xray_base_dir }}/{{ xray_version }}"
+
+- name: System user for Xray
+  ansible.builtin.user:
+    name: xray
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ xray_release_dir }}", group: root, mode: "0755" }
+    - { path: "{{ xray_config_dir }}", group: xray, mode: "0750" }
+
+- name: Download pinned Xray release (checksum verified)
+  ansible.builtin.get_url:
+    url: "https://github.com/XTLS/Xray-core/releases/download/{{ xray_version }}/Xray-linux-{{ xray_arch }}.zip"
+    dest: "{{ xray_release_dir }}/xray.zip"
+    checksum: "sha256:{{ xray_sha256[xray_arch] }}"
+    mode: "0644"
+
+- name: Unpack release
+  ansible.builtin.unarchive:
+    src: "{{ xray_release_dir }}/xray.zip"
+    dest: "{{ xray_release_dir }}"
+    remote_src: true
+    creates: "{{ xray_release_dir }}/xray"
+
+# The new config is validated by the binary being switched to, before either goes live.
+- name: Validate config against this release
+  ansible.builtin.command:
+    cmd: "{{ xray_release_dir }}/xray run -test -config stdin:"
+    stdin: "{{ lookup('ansible.builtin.file', xray_config_src) }}"
+  environment:
+    XRAY_LOCATION_ASSET: "{{ xray_release_dir }}"
+  changed_when: false
+
+- name: Point "current" at this release
+  ansible.builtin.file:
+    src: "{{ xray_release_dir }}"
+    dest: "{{ xray_base_dir }}/current"
+    state: link
+  notify: Restart xray
+
+- name: Install config
+  ansible.builtin.copy:
+    src: "{{ xray_config_src }}"
+    dest: "{{ xray_config_dir }}/config.json"
+    owner: root
+    group: xray
+    mode: "0640"
+  notify: Restart xray
+
+- name: Install systemd unit
+  ansible.builtin.template:
+    src: xray.service.j2
+    dest: /etc/systemd/system/xray.service
+    mode: "0644"
+  notify: Restart xray
+
+- name: Enable Xray
+  ansible.builtin.systemd:
+    name: xray
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending restarts now
+  ansible.builtin.meta: flush_handlers
+
+- name: Xray is running
+  ansible.builtin.systemd:
+    name: xray
+    state: started
+
+- name: Xray answers on its public ports
+  ansible.builtin.wait_for:
+    port: "{{ item }}"
+    timeout: 20
+  loop: "{{ xray_public_ports }}"

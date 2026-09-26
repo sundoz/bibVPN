@@ -1,0 +1,8 @@
+- name: Apply sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+
+- name: Reload sshd
+  # Validate the full config first: a broken sshd config must never be applied.
+  ansible.builtin.shell: /usr/sbin/sshd -t && systemctl reload ssh
+  changed_when: true
