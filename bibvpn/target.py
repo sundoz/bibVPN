@@ -34,18 +34,18 @@ class TargetReport:
     warnings: list[str] = field(default_factory=list)
 
 
-def check_target(host: str, timeout: float = 8.0) -> TargetReport:
+def check_target(host: str, timeout: float = 8.0, port: int = 443, ca_file: str | None = None) -> TargetReport:
     report = TargetReport(host=host)
 
     if any(host == d or host.endswith("." + d) for d in OVERUSED):
         report.warnings.append("overused target: pick a less famous site hosted near the node")
 
-    ctx = ssl.create_default_context()
+    ctx = ssl.create_default_context(cafile=ca_file)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.set_alpn_protocols(["h2", "http/1.1"])
     try:
         start = time.monotonic()
-        with socket.create_connection((host, 443), timeout=timeout) as raw:
+        with socket.create_connection((host, port), timeout=timeout) as raw:
             with ctx.wrap_socket(raw, server_hostname=host) as tls:
                 report.rtt_ms = (time.monotonic() - start) * 1000
                 report.tls_version = tls.version() or ""
@@ -55,7 +55,7 @@ def check_target(host: str, timeout: float = 8.0) -> TargetReport:
     except ssl.SSLError as e:
         report.problems.append(f"TLS 1.3 handshake failed: {e.reason or e}")
     except OSError as e:
-        report.problems.append(f"cannot connect to {host}:443: {e}")
+        report.problems.append(f"cannot connect to {host}:{port}: {e}")
 
     if report.tls_version and report.alpn != "h2":
         report.problems.append("server does not negotiate HTTP/2 (h2)")

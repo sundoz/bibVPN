@@ -11,11 +11,21 @@ the node exposes nothing but what looks like a TLS 1.3 site:
   to an internal XHTTP inbound on an abstract unix socket.
 """
 
-from bibvpn.state import Node, State, User
+from bibvpn.state import Node, State, User, is_ip
 
 API_LISTEN = "127.0.0.1:10085"
 XHTTP_SOCKET = "@bibvpn-xhttp"
 VISION_FLOW = "xtls-rprx-vision"
+
+# Non-public address space. Listed explicitly rather than only via geoip:private so the
+# protection does not depend on the contents of a downloaded geo database.
+PRIVATE_NETS = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/3",
+    "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+]
+# Outbound mail: open proxies get abused for spam, and hosters ban for it.
+BLOCKED_PORTS = "25,465,587"
 
 
 def _reality(node: Node) -> dict:
@@ -38,6 +48,13 @@ def _clients(users: list[User], flow: str | None) -> list[dict]:
             client["flow"] = flow
         clients.append(client)
     return clients
+
+
+def _internal_ips(node: Node) -> list[str]:
+    ips = ["geoip:private", *PRIVATE_NETS]
+    if is_ip(node.host):
+        ips.append(node.host)
+    return ips
 
 
 def _sniffing() -> dict:
@@ -90,8 +107,12 @@ def render_server_config(state: State, node: Node) -> dict:
         "routing": {
             "domainStrategy": "IPIfNonMatch",
             "rules": [
-                # Clients must not reach the server's own network or loopback services.
-                {"ip": ["geoip:private"], "outboundTag": "block"},
+                # Clients must not reach the server's own services (SSH, the Xray API,
+                # anything bound to localhost or the LAN, cloud metadata at 169.254.169.254).
+                # Connections to the node's own public IP would arrive via loopback and skip
+                # the firewall, so that IP is blocked too.
+                {"ip": _internal_ips(node), "outboundTag": "block"},
+                {"port": BLOCKED_PORTS, "outboundTag": "block"},
                 # Torrent traffic is the #1 source of hoster abuse complaints and bans.
                 {"protocol": ["bittorrent"], "outboundTag": "block"},
             ],

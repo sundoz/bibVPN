@@ -77,9 +77,12 @@
       or set common_ssh_disable_passwords=false.
   when: common_ssh_disable_passwords
 
+# sshd uses the FIRST value it reads for each option, and drop-ins are read in name
+# order. Cloud images often ship 50-cloud-init.conf with "PasswordAuthentication yes",
+# so our file must sort first ("00-") or it is silently ignored.
 - name: SSH - key-only login
   ansible.builtin.copy:
-    dest: /etc/ssh/sshd_config.d/90-bibvpn.conf
+    dest: /etc/ssh/sshd_config.d/00-bibvpn.conf
     content: |
       PasswordAuthentication no
       KbdInteractiveAuthentication no
@@ -87,6 +90,31 @@
     mode: "0644"
   when: common_ssh_disable_passwords
   notify: Reload sshd
+
+- name: SSH - remove drop-in from older bibvpn versions
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/90-bibvpn.conf
+    state: absent
+  notify: Reload sshd
+
+- name: SSH - apply now
+  ansible.builtin.meta: flush_handlers
+
+# Trust the effective config, not the file we wrote.
+- name: SSH - read effective settings
+  ansible.builtin.command: /usr/sbin/sshd -T
+  register: common_sshd_effective
+  changed_when: false
+  when: common_ssh_disable_passwords
+
+- name: SSH - verify password login is really off
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in common_sshd_effective.stdout_lines"
+      - "'kbdinteractiveauthentication no' in common_sshd_effective.stdout_lines"
+      - "common_sshd_effective.stdout_lines | select('match', '^permitrootlogin (without-password|prohibit-password|no)$') | list | length == 1"
+    fail_msg: "sshd still allows password login; check /etc/ssh/sshd_config and sshd_config.d/"
+  when: common_ssh_disable_passwords
 
 - name: Fail2ban running
   ansible.builtin.service:

@@ -34,12 +34,15 @@ def render_inventory(state: State, build_dir: Path) -> dict:
 
 
 def _write(path: Path, text: str, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Rendered files contain keys and UUIDs: owner-only, like the state file.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(text)
     os.chmod(path, mode)
 
 
 def render_all(state: State, build_dir: Path) -> list[Path]:
+    build_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(build_dir, 0o700)
     # Start clean so removed nodes/users do not leave stale secrets behind.
     for sub in ("nodes", "clients"):
         shutil.rmtree(build_dir / sub, ignore_errors=True)

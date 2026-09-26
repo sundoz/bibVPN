@@ -38,3 +38,39 @@ def test_extra_args_only_for_deploy(run):
     run("init")
     with pytest.raises(SystemExit):
         run("user", "list", "--private-key", "x")
+
+
+def test_node_add_refuses_bad_sni(run, monkeypatch, capsys):
+    from bibvpn import target
+
+    run("init")
+    bad = target.TargetReport(host="x.example", ok=False, problems=["TLS 1.3 handshake failed"])
+    monkeypatch.setattr(target, "check_target", lambda host: bad)
+    assert run("node", "add", "fi1", "198.51.100.7", "--sni", "x.example") == 1
+    assert "TLS 1.3" in capsys.readouterr().out
+    assert st.load(run.state_path).nodes == []
+
+
+def test_node_add_rejects_injection(run, capsys):
+    run("init")
+    assert run("node", "add", "fi1", "{{ lookup('pipe','id') }}", "--sni", "www.example.org", "--force") == 2
+    assert "host must be" in capsys.readouterr().err
+
+
+def test_deploy_runs_playbook(run, monkeypatch, tmp_path):
+    run("init")
+    run("node", "add", "fi1", "198.51.100.7", "--sni", "www.example.org", "--force")
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda cmd, cwd: calls.append(cmd) or 0)
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: "/usr/bin/ansible-playbook")
+    assert run("deploy", "--limit", "fi1", "--check", "--private-key", "k") == 0
+    cmd = calls[0]
+    assert cmd[0] == "/usr/bin/ansible-playbook" and cmd[-2:] == ["--private-key", "k"]
+    assert ["--limit", "fi1"] == cmd[cmd.index("--limit") : cmd.index("--limit") + 2]
+    assert "--check" in cmd and (tmp_path / "build" / "inventory.yml").exists()
+
+
+def test_deploy_without_nodes(run, capsys):
+    run("init")
+    assert run("deploy") == 1
+    assert "no active nodes" in capsys.readouterr().out

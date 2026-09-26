@@ -26,9 +26,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fetch() { # fetch <socks port>: HTTP status of a request through the tunnel ("000" on failure)
-  env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy \
-    curl -s -m 15 --socks5-hostname "127.0.0.1:$1" -o /dev/null -w "%{http_code}" https://github.com || true
+tcurl() { # curl through the tunnel; proxy env vars (incl. no_proxy) must not bypass it
+  env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u no_proxy -u NO_PROXY \
+    curl -s -m 10 --socks5-hostname "127.0.0.1:$1" "${@:2}" || true
+}
+fetch() { # fetch <socks port>: HTTP status through the tunnel ("000" on failure)
+  tcurl "$1" -o /dev/null -w "%{http_code}" https://github.com
 }
 
 ssh-keygen -q -t ed25519 -N "" -f "$WORK/id"
@@ -43,6 +46,9 @@ if [[ -n "${EXTRA_CA:-}" ]]; then
   docker cp "$EXTRA_CA" "$NODE:/usr/local/share/ca-certificates/extra.crt"
   docker exec "$NODE" update-ca-certificates >/dev/null
 fi
+
+# Like many cloud images: a drop-in that enables password login.
+docker exec "$NODE" bash -c 'echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-cloud-init.conf'
 
 $BIBVPN init
 $BIBVPN node add node1 "$IP" --sni "$SNI"
@@ -82,7 +88,28 @@ echo "== 4. probes see $SNI"
 openssl s_client -connect "$IP:443" -servername "$SNI" </dev/null 2>/dev/null | grep -q "subject=.*${SNI#www.}" \
   || { echo "FAIL: probe did not see $SNI certificate"; exit 1; }
 
-echo "== 5. disabled user is cut off"
+echo "== 5. security"
+sshd_cfg=$(docker exec "$NODE" sshd -T)
+grep -qx "passwordauthentication no" <<<"$sshd_cfg" || { echo "FAIL: SSH password login still enabled"; exit 1; }
+grep -qx "kbdinteractiveauthentication no" <<<"$sshd_cfg" || { echo "FAIL: keyboard-interactive still enabled"; exit 1; }
+open_ports=$(docker exec "$NODE" ufw status | awk '/ALLOW/ && !/v6/ {print $1}' | sort | tr '\n' ' ')
+[[ "$open_ports" == "22/tcp 443/tcp " ]] || { echo "FAIL: unexpected open ports: $open_ports"; exit 1; }
+docker exec "$NODE" ufw status verbose | grep -q "deny (incoming)" || { echo "FAIL: firewall not default-deny"; exit 1; }
+docker exec "$NODE" fail2ban-client status sshd >/dev/null || { echo "FAIL: fail2ban sshd jail not running"; exit 1; }
+[[ $(docker exec "$NODE" ps -o user= -C xray) == xray ]] || { echo "FAIL: xray not running as its own user"; exit 1; }
+score=$(docker exec "$NODE" systemd-analyze security xray --no-pager | grep 'Overall exposure level' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+echo "  systemd exposure score: $score (lower is better)"
+awk -v s="$score" 'BEGIN { exit !(s < 3.0) }' || { echo "FAIL: xray sandbox too weak ($score)"; exit 1; }
+for target in 127.0.0.1:22 localhost:22 "$IP:22" "[::1]:22"; do
+  banner=$(tcurl 31080 --http0.9 "http://$target/" | head -c 7)
+  [[ "$banner" != SSH-2.0 ]] || { echo "FAIL: server SSH reachable through the tunnel at $target"; exit 1; }
+done
+[[ $(tcurl 31080 --http2-prior-knowledge -o /dev/null -w "%{http_code}" http://127.0.0.1:10085/) == 000 ]] \
+  || { echo "FAIL: Xray API reachable through the tunnel"; exit 1; }
+[[ $(fetch 31080) == 200 ]] || { echo "FAIL: tunnel broke during security checks"; exit 1; }
+echo "  ok"
+
+echo "== 6. disabled user is cut off"
 $BIBVPN user disable alice
 $BIBVPN deploy --private-key "$WORK/id" > "$WORK/deploy3.log"
 sleep 2
