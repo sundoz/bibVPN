@@ -70,9 +70,16 @@ def cmd_node_list(args) -> int:
 
 def cmd_node_rm(args) -> int:
     s = _load(args)
-    s.nodes.remove(s.node(args.name))
+    node = s.node(args.name)
+    if node.enabled and not args.force:
+        print(f"node {node.name} is enabled: removing it from state would leave Xray running on the")
+        print("server with every existing link still working. First stop it:")
+        print(f"  bibvpn node set {node.name} --disable && bibvpn deploy")
+        print(f"then `bibvpn node rm {node.name}` (or pass --force if the server is already gone).")
+        return 1
+    s.nodes.remove(node)
     _save(args, s)
-    print(f"removed node {args.name} from state (the server itself is untouched)")
+    print(f"removed node {args.name} from state")
     return 0
 
 
@@ -81,6 +88,10 @@ def cmd_node_set(args) -> int:
     node = s.node(args.name)
     if args.enabled is not None:
         node.enabled = args.enabled
+        if not node.enabled:
+            print("on the next deploy Xray on this server is stopped, its config (keys, UUIDs)")
+            print("deleted and port closed: all links to it stop working. It also leaves")
+            print("subscriptions and monitoring.")
     if args.sni:
         node.reality.sni = args.sni
     if args.rotate_keys:
@@ -261,8 +272,10 @@ def cmd_render(args) -> int:
 
 def cmd_deploy(args) -> int:
     s = _load(args)
-    if not s.active_nodes():
-        print("no active nodes; add one with `bibvpn node add`")
+    # Disabled nodes still need a deploy (that is what stops them), so only an empty
+    # state has nothing to do.
+    if not s.nodes and not s.hub:
+        print("no nodes; add one with `bibvpn node add`")
         return 1
     render.render_all(s, args.build_dir)
     # Prefer the ansible-playbook installed next to this interpreter (same venv).
@@ -305,13 +318,17 @@ def build_parser() -> argparse.ArgumentParser:
     na.add_argument("--force", action="store_true", help="skip the SNI check")
     na.set_defaults(func=cmd_node_add)
     node.add_parser("list").set_defaults(func=cmd_node_list)
-    nr = node.add_parser("rm")
+    nr = node.add_parser("rm", help="forget a node (disable + deploy it first)")
     nr.add_argument("name")
+    nr.add_argument("--force", action="store_true", help="remove even if enabled (server already gone)")
     nr.set_defaults(func=cmd_node_rm)
     ns = node.add_parser("set", help="change a node")
     ns.add_argument("name")
     ns.add_argument("--enable", dest="enabled", action="store_const", const=True)
-    ns.add_argument("--disable", dest="enabled", action="store_const", const=False)
+    ns.add_argument(
+        "--disable", dest="enabled", action="store_const", const=False,
+        help="next deploy stops Xray there and deletes its config; links stop working",
+    )
     ns.add_argument("--sni")
     ns.add_argument("--rotate-keys", action="store_true", help="new Reality keys (invalidates links)")
     ns.set_defaults(func=cmd_node_set)

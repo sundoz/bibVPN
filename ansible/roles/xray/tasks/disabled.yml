@@ -1,0 +1,21 @@
+# `bibvpn node set NAME --disable` + deploy: the node must stop accepting any link.
+- name: Is Xray installed
+  ansible.builtin.stat:
+    path: /etc/systemd/system/xray.service
+  register: xray_unit
+
+- name: Stop and disable Xray
+  ansible.builtin.systemd:
+    name: xray
+    state: stopped
+    enabled: false
+  when: xray_unit.stat.exists
+
+# The config holds the Reality private key and all user UUIDs.
+- name: Remove config with secrets
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ xray_config_dir }}/config.json"
+    - "{{ xray_config_dir }}/config.staged.json"

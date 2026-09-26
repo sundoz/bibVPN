@@ -1,3 +1,29 @@
+- name: Disabled node - stop Xray and remove its secrets
+  when: not bibvpn_node_enabled | default(true)
+  block:
+    - name: Disable node
+      ansible.builtin.include_tasks: disabled.yml
+
+    - name: Nothing else to do for a disabled node
+      ansible.builtin.meta: end_host
+
+- name: Was this node deployed before
+  ansible.builtin.stat:
+    path: "{{ xray_config_dir }}/config.json"
+  register: xray_deployed
+
+# --check writes nothing, and every later task builds on files, users and directories
+# the first real run creates, so on a fresh server the preview ends here.
+- name: Fresh node under --check
+  when: ansible_check_mode and not xray_deployed.stat.exists
+  block:
+    - name: Explain the limited preview
+      ansible.builtin.debug:
+        msg: "First deploy of this node: --check previews base setup only; later runs preview everything"
+
+    - name: Stop the preview for this node
+      ansible.builtin.meta: end_host
+
 - name: Xray binary (downloaded, not yet switched in)
   ansible.builtin.include_role:
     name: xray_bin
@@ -11,14 +37,26 @@
     group: xray
     mode: "0750"
 
-# The new config is validated by the binary being switched to, before either goes live.
-- name: Validate config against this release
+# The config holds the Reality private key and every user's UUID. It is never shown
+# in --diff output (diff: false) nor passed as a task argument: it is staged as a file,
+# validated by path with the new release, and only then moved into place.
+- name: Stage config
+  ansible.builtin.copy:
+    src: "{{ xray_config_src }}"
+    dest: "{{ xray_config_dir }}/config.staged.json"
+    owner: root
+    group: xray
+    mode: "0640"
+  diff: false
+
+- name: Validate staged config against this release
   ansible.builtin.command:
-    cmd: "{{ xray_release_dir }}/xray run -test -config stdin:"
-    stdin: "{{ lookup('ansible.builtin.file', xray_config_src) }}"
+    cmd: "{{ xray_release_dir }}/xray run -test -config {{ xray_config_dir }}/config.staged.json"
   environment:
     XRAY_LOCATION_ASSET: "{{ xray_release_dir }}"
   changed_when: false
+  # --check writes nothing, so there is no staged file or new binary to run.
+  when: not ansible_check_mode
 
 - name: Switch to this release
   ansible.builtin.include_role:
@@ -33,11 +71,14 @@
 
 - name: Install config
   ansible.builtin.copy:
-    src: "{{ xray_config_src }}"
+    src: "{{ xray_config_dir }}/config.staged.json"
+    remote_src: true
     dest: "{{ xray_config_dir }}/config.json"
     owner: root
     group: xray
     mode: "0640"
+  diff: false
+  when: not ansible_check_mode
   notify: Restart xray
 
 - name: Install systemd unit
@@ -52,6 +93,7 @@
     name: xray
     enabled: true
     daemon_reload: true
+  when: not ansible_check_mode
 
 - name: Apply pending restarts now
   ansible.builtin.meta: flush_handlers
@@ -60,9 +102,11 @@
   ansible.builtin.systemd:
     name: xray
     state: started
+  when: not ansible_check_mode
 
 - name: Xray answers on its public ports
   ansible.builtin.wait_for:
     port: "{{ item }}"
     timeout: 20
   loop: "{{ bibvpn_public_ports }}"
+  when: not ansible_check_mode

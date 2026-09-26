@@ -12,11 +12,14 @@
 #   7. monitoring: `bibvpn status` is green; when the node goes down the hub marks it
 #      in subscriptions and sends a Telegram alert (to a fake Telegram API), and
 #      another when it comes back;
-#   8. a disabled user is cut off and their subscription disappears.
+#   0. `deploy --check --diff` works on fresh servers and never prints secrets;
+#   8. ... nor when the config changes (Reality private key, UUIDs, tokens);
+#   9. a disabled user is cut off and their subscription disappears;
+#  10. a disabled node is really stopped: Xray off, config with keys deleted, port closed.
 #
 # Needs: docker (privileged containers), ssh, the project venv (make dev), and an
 # `xray` binary on PATH for the client side.
-# Optional: REBUILD=1 rebuilds the image; EXTRA_CA=/path/ca.crt is trusted inside the
+# Optional: KEEP=1 keeps containers and logs; REBUILD=1 rebuilds the image; EXTRA_CA=/path/ca.crt is trusted inside the
 # containers (for TLS-intercepting proxies).
 set -euo pipefail
 
@@ -33,6 +36,10 @@ CLIENT_PIDS=()
 
 cleanup() {
   for pid in "${CLIENT_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+  if [[ -n "${KEEP:-}" ]]; then  # KEEP=1: leave containers and logs for debugging
+    echo "kept: logs in $WORK, containers $NODE $HUB"
+    return
+  fi
   docker rm -f "$NODE" "$HUB" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -97,6 +104,26 @@ $BIBVPN monitor set --threshold 2 --interval 60 \
   --small-url https://github.com \
   --large-url https://github.com/XTLS/Xray-core/releases/download/v26.9.9/Xray-linux-64.zip \
   --telegram-token "$TG_TOKEN" --telegram-chat-id 42 --telegram-api http://127.0.0.1:8099
+
+secrets_leaked() { # secrets_leaked <file>: any Reality private key or user/monitor UUID in it?
+  "$ROOT/.venv/bin/python" - "$WORK/state.yml" "$1" <<'PY'
+import sys
+from pathlib import Path
+from bibvpn import state as st
+s = st.load(Path(sys.argv[1]))
+text = Path(sys.argv[2]).read_text()
+secrets = [n.reality.private_key for n in s.nodes] + [u.uuid for u in s.users] + [s.monitor.uuid]
+secrets += [u.sub_token for u in s.users] + ([s.monitor.telegram_token] if s.monitor.telegram_token else [])
+found = [x[:6] + "..." for x in secrets if x in text]
+print(" ".join(found))
+sys.exit(0 if found else 1)
+PY
+}
+
+echo "== 0. dry run (--check --diff) on fresh servers"
+$BIBVPN deploy --check --private-key "$WORK/id" > "$WORK/check0.log" 2>&1 || { tail -40 "$WORK/check0.log"; fail "deploy --check on fresh servers"; }
+leak=$(secrets_leaked "$WORK/check0.log") && fail "deploy --check printed secrets: $leak"
+echo "  ok, no secrets in output"
 
 echo "== 1. first deploy"
 $BIBVPN deploy --private-key "$WORK/id" | tee "$WORK/deploy1.log" | tail -4
@@ -189,7 +216,16 @@ $BIBVPN status -i "$WORK/id" "${SSH_OPTS[@]}" || fail "status not green after re
 [[ $(tg_messages | wc -l) == 2 ]] || { tg_messages; fail "expected exactly 2 alerts"; }
 echo "  ok"
 
-echo "== 8. disabled user is cut off"
+echo "== 8. --check after a config change prints no secrets"
+$BIBVPN user add bob
+$BIBVPN deploy --check --private-key "$WORK/id" > "$WORK/check1.log" 2>&1 || { tail -40 "$WORK/check1.log"; fail "deploy --check"; }
+grep -q "Stage config" "$WORK/check1.log" || fail "check run did not reach the config"
+leak=$(secrets_leaked "$WORK/check1.log") && fail "deploy --check printed secrets: $leak"
+grep -q "changed: \[node1\]" "$WORK/check1.log" || fail "--check did not report the pending config change"
+$BIBVPN user rm bob
+echo "  ok"
+
+echo "== 9. disabled user is cut off"
 $BIBVPN user disable alice
 $BIBVPN deploy --private-key "$WORK/id" > "$WORK/deploy3.log"
 sleep 2
@@ -198,5 +234,19 @@ for port in 31080 31081; do
   [[ "$code" == 000 ]] || fail "disabled user still has access on :$port ($code)"
 done
 [[ $(subcurl -o /dev/null -w "%{http_code}" "https://$HUB_DOMAIN$SUB_PATH") == 404 ]] || fail "disabled user's subscription still served"
+
+echo "== 10. disabled node is really stopped"
+$BIBVPN node rm node1 && fail "node rm accepted a running node"
+$BIBVPN user enable alice
+$BIBVPN node set node1 --disable
+$BIBVPN deploy --private-key "$WORK/id" > "$WORK/deploy4.log" || { tail -30 "$WORK/deploy4.log"; fail "deploy with disabled node"; }
+docker exec "$NODE" systemctl is-active -q xray && fail "xray still running on disabled node"
+docker exec "$NODE" systemctl is-enabled -q xray && fail "xray still enabled on disabled node"
+docker exec "$NODE" test -e /usr/local/etc/xray/config.json && fail "config with keys left on disabled node"
+docker exec "$NODE" ufw status | grep -q "^443/tcp" && fail "port 443 still open on disabled node"
+timeout 5 bash -c "echo > /dev/tcp/$IP/443" 2>/dev/null && fail "port 443 still answers"
+[[ $(fetch 31080) == 000 ]] || fail "old link still works on disabled node"
+$BIBVPN node rm node1 || fail "node rm after disable"
+echo "  ok"
 
 echo "PASS"

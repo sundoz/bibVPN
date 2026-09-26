@@ -20,12 +20,19 @@
   loop:
     - { path: "{{ xray_release_dir }}", group: root, mode: "0755" }
 
+- name: Is this release directory already there
+  ansible.builtin.stat:
+    path: "{{ xray_release_dir }}"
+  register: xray_bin_release_dir
+
 - name: Download pinned Xray release (checksum verified)
   ansible.builtin.get_url:
     url: "https://github.com/XTLS/Xray-core/releases/download/{{ xray_version }}/Xray-linux-{{ xray_arch }}.zip"
     dest: "{{ xray_release_dir }}/xray.zip"
     checksum: "sha256:{{ xray_sha256[xray_arch] }}"
     mode: "0644"
+  # Under --check a new release directory was not created, so there is nowhere to download to.
+  when: not ansible_check_mode or xray_bin_release_dir.stat.exists
 
 - name: Unpack release
   ansible.builtin.unarchive:
@@ -33,3 +40,5 @@
     dest: "{{ xray_release_dir }}"
     remote_src: true
     creates: "{{ xray_release_dir }}/xray"
+  # --check does not download, so there is nothing to unpack yet.
+  when: not ansible_check_mode

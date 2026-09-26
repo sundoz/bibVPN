@@ -3,14 +3,17 @@
     name: bibvpn-probe.service
     state: restarted
     daemon_reload: true
+  when: not ansible_check_mode
 
 - name: Restart bibvpn-monitor timer
   ansible.builtin.systemd:
     name: bibvpn-monitor.timer
     state: restarted
     daemon_reload: true
+  when: not ansible_check_mode
 
 - name: Reload caddy
   ansible.builtin.systemd:
     name: caddy
     state: reloaded
+  when: not ansible_check_mode

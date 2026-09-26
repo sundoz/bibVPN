@@ -22,15 +22,21 @@ from bibvpn.xray import render_server_config
 
 def render_inventory(state: State, build_dir: Path) -> dict:
     hosts = {}
-    for node in state.active_nodes():
-        hosts[node.name] = {
+    # Disabled nodes stay in the inventory: deploy must actively stop Xray there and
+    # delete its config, or the server would keep accepting the old links.
+    for node in state.nodes:
+        host = {
             "ansible_host": node.host,
             "ansible_user": node.ssh_user,
             "ansible_port": node.ssh_port,
             "bibvpn_role": node.role,
-            "bibvpn_public_ports": [node.port],
-            "xray_config_src": str((build_dir / "nodes" / node.name / "config.json").resolve()),
+            "bibvpn_node_enabled": node.enabled,
+            "bibvpn_public_ports": [node.port] if node.enabled else [],
+            "bibvpn_closed_ports": [] if node.enabled else [node.port],
         }
+        if node.enabled:
+            host["xray_config_src"] = str((build_dir / "nodes" / node.name / "config.json").resolve())
+        hosts[node.name] = host
     groups = {"bibvpn_nodes": {"hosts": hosts}}
     if state.hub:
         hub_dir = (build_dir / "hub").resolve()

@@ -61,6 +61,12 @@ def _clients(identities: list[tuple[str, str]], flow: str | None) -> list[dict]:
     return clients
 
 
+# "::" is dual-stack: Go sets IPV6_V6ONLY=0 itself, so IPv4 clients are accepted too,
+# and on kernels with IPv6 disabled it falls back to IPv4 (verified). "0.0.0.0" would
+# silently make IPv6 nodes unreachable.
+PUBLIC_LISTEN = "::"
+
+
 def _internal_ips(node: Node) -> list[str]:
     ips = ["geoip:private", *PRIVATE_NETS]
     if is_ip(node.host):
@@ -87,7 +93,7 @@ def render_server_config(state: State, node: Node) -> dict:
         "inbounds": [
             {
                 "tag": "vless-vision",
-                "listen": "0.0.0.0",
+                "listen": PUBLIC_LISTEN,
                 "port": node.port,
                 "protocol": "vless",
                 "settings": {

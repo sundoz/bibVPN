@@ -73,4 +73,15 @@ def test_deploy_runs_playbook(run, monkeypatch, tmp_path):
 def test_deploy_without_nodes(run, capsys):
     run("init")
     assert run("deploy") == 1
-    assert "no active nodes" in capsys.readouterr().out
+    assert "no nodes" in capsys.readouterr().out
+
+
+def test_deploy_still_runs_when_every_node_is_disabled(run, monkeypatch):
+    """Disabling the last node must still reach the server, or it keeps running."""
+    run("init")
+    run("node", "add", "fi1", "198.51.100.7", "--sni", "www.example.org", "--force")
+    run("node", "set", "fi1", "--disable")
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda cmd, cwd: calls.append(cmd) or 0)
+    monkeypatch.setattr(cli.shutil, "which", lambda name, path=None: "/usr/bin/ansible-playbook")
+    assert run("deploy") == 0 and calls

@@ -4,7 +4,26 @@
       - ansible_facts.os_family == "Debian"
     fail_msg: "bibVPN supports Debian 12+/Ubuntu 22.04+ servers"
 
+# The apt module needs python3-apt to preview changes under --check. A real run
+# installs it automatically; a dry run must not change the server, so it only warns.
+- name: Is python3-apt installed
+  ansible.builtin.command: dpkg-query -W -f=${Status} python3-apt
+  register: common_python3_apt
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Remember whether package changes can be previewed
+  ansible.builtin.set_fact:
+    common_apt_ready: "{{ not ansible_check_mode or 'install ok installed' in common_python3_apt.stdout }}"
+
+- name: Warn that package changes are not previewed
+  ansible.builtin.debug:
+    msg: "python3-apt is missing, so --check cannot preview package installs; a real deploy installs it"
+  when: not common_apt_ready
+
 - name: Install base packages
+  when: common_apt_ready
   ansible.builtin.apt:
     name: "{{ common_packages }}"
     state: present
@@ -39,6 +58,10 @@
   ansible.builtin.command: ufw status verbose
   register: common_ufw_status
   changed_when: false
+  # Read-only, so it also runs under --check. On a fresh server ufw is not
+  # installed yet during --check.
+  check_mode: false
+  failed_when: false
 
 # SSH is allowed before the firewall is enabled, so we never cut ourselves off. No `ufw limit`:
 # it rejects Ansible's burst of connections; brute force is handled by fail2ban.
@@ -51,14 +74,20 @@
   register: common_ufw_rule
   changed_when: "'Skipping' not in common_ufw_rule.stdout"
 
+- name: Firewall - close ports of disabled services
+  ansible.builtin.command: "ufw delete allow {{ item }}/tcp"
+  loop: "{{ bibvpn_closed_ports | default([]) }}"
+  register: common_ufw_closed
+  changed_when: "'non-existent' not in common_ufw_closed.stdout"
+
 - name: Firewall - deny everything else inbound
   ansible.builtin.command: ufw default deny incoming
-  when: "'deny (incoming)' not in common_ufw_status.stdout"
+  when: "'deny (incoming)' not in (common_ufw_status.stdout | default(''))"
   changed_when: true
 
 - name: Firewall - enable
   ansible.builtin.command: ufw --force enable
-  when: "'Status: active' not in common_ufw_status.stdout"
+  when: "'Status: active' not in (common_ufw_status.stdout | default(''))"
   changed_when: true
 
 - name: SSH - find authorized keys of the deploy user
@@ -105,7 +134,8 @@
   ansible.builtin.command: /usr/sbin/sshd -T
   register: common_sshd_effective
   changed_when: false
-  when: common_ssh_disable_passwords
+  # Under --check the new drop-in was not written, so there is nothing to verify.
+  when: common_ssh_disable_passwords and not ansible_check_mode
 
 - name: SSH - verify password login is really off
   ansible.builtin.assert:
@@ -114,10 +144,11 @@
       - "'kbdinteractiveauthentication no' in common_sshd_effective.stdout_lines"
       - "common_sshd_effective.stdout_lines | select('match', '^permitrootlogin (without-password|prohibit-password|no)$') | list | length == 1"
     fail_msg: "sshd still allows password login; check /etc/ssh/sshd_config and sshd_config.d/"
-  when: common_ssh_disable_passwords
+  when: common_ssh_disable_passwords and not ansible_check_mode
 
 - name: Fail2ban running
   ansible.builtin.service:
     name: fail2ban
     state: started
     enabled: true
+  when: not ansible_check_mode
