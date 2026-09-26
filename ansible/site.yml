@@ -1,14 +1,21 @@
 # Applied by `bibvpn deploy`, which renders build/inventory.yml first.
-- name: Prepare and harden the server
-  hosts: bibvpn_nodes
+- name: Prepare and harden the servers
+  hosts: bibvpn_nodes:bibvpn_hub
   become: true
   roles:
     - common
 
-- name: Install and configure Xray
+- name: Install and configure Xray on the nodes
   hosts: bibvpn_nodes
   become: true
   # One node at a time: a bad release never takes the whole fleet down at once.
   serial: 1
   roles:
     - xray
+
+# After the nodes, so they already accept the hub's probe identity.
+- name: Hub - subscriptions and monitoring
+  hosts: bibvpn_hub
+  become: true
+  roles:
+    - hub

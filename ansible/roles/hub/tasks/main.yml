@@ -1,0 +1,122 @@
+# The hub: HTTPS subscriptions (Caddy), a probe Xray client and the monitor timer.
+- name: Install Caddy (web server with automatic HTTPS)
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+
+- name: Xray binary (downloaded, not yet switched in)
+  ansible.builtin.include_role:
+    name: xray_bin
+    public: true
+
+- name: Monitor system user
+  ansible.builtin.user:
+    name: "{{ hub_monitor_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ hub_etc_dir }}", owner: root, group: root, mode: "0755" }
+    - { path: "{{ hub_lib_dir }}", owner: root, group: root, mode: "0755" }
+    - { path: "{{ hub_sub_dir | dirname }}", owner: root, group: root, mode: "0755" }
+    # setgid: files the monitor writes here get group "caddy", so Caddy can serve them.
+    - { path: "{{ hub_sub_dir }}", owner: "{{ hub_monitor_user }}", group: caddy, mode: "2750" }
+    - { path: "{{ hub_state_dir }}", owner: "{{ hub_monitor_user }}", group: "{{ hub_monitor_user }}", mode: "0700" }
+
+- name: Validate probe config against this Xray release
+  ansible.builtin.command:
+    cmd: "{{ xray_release_dir }}/xray run -test -config stdin:"
+    stdin: "{{ lookup('ansible.builtin.file', hub_build_dir + '/probe-xray.json') }}"
+  environment:
+    XRAY_LOCATION_ASSET: "{{ xray_release_dir }}"
+  changed_when: false
+
+- name: Switch to this Xray release
+  ansible.builtin.include_role:
+    name: xray_bin
+    tasks_from: switch
+
+- name: Restart probe when a new Xray release was switched in
+  ansible.builtin.debug:
+    msg: "Xray {{ xray_version }} is now current"
+  changed_when: xray_bin_switch.changed
+  notify: Restart bibvpn-probe
+
+- name: Probe Xray config
+  ansible.builtin.copy:
+    src: "{{ hub_build_dir }}/probe-xray.json"
+    dest: "{{ hub_etc_dir }}/probe-xray.json"
+    owner: root
+    group: xray
+    mode: "0640"
+  notify: Restart bibvpn-probe
+
+- name: Monitor script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../bibvpn/monitor.py"
+    dest: "{{ hub_lib_dir }}/monitor.py"
+    mode: "0755"
+
+# Holds every user's links and the Telegram token: readable by the monitor only.
+- name: Monitor config
+  ansible.builtin.copy:
+    src: "{{ hub_build_dir }}/monitor.json"
+    dest: "{{ hub_etc_dir }}/monitor.json"
+    owner: root
+    group: "{{ hub_monitor_user }}"
+    mode: "0640"
+
+- name: Systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - bibvpn-probe.service
+    - bibvpn-monitor.service
+    - bibvpn-monitor.timer
+  notify:
+    - Restart bibvpn-probe
+    - Restart bibvpn-monitor timer
+
+- name: Caddy config (subscriptions)
+  ansible.builtin.copy:
+    src: "{{ hub_build_dir }}/Caddyfile"
+    dest: /etc/caddy/Caddyfile
+    mode: "0644"
+    validate: caddy validate --adapter caddyfile --config %s
+  notify: Reload caddy
+
+- name: Enable services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - caddy
+    - bibvpn-probe.service
+    - bibvpn-monitor.timer
+
+- name: Apply pending restarts now
+  ansible.builtin.meta: flush_handlers
+
+# One round right away so subscriptions exist and status is fresh after every deploy.
+- name: Run one monitor round now
+  ansible.builtin.systemd:
+    name: bibvpn-monitor.service
+    state: started
+  changed_when: false
+
+- name: Subscriptions are served
+  ansible.builtin.wait_for:
+    port: 443
+    timeout: 30

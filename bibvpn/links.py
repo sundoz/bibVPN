@@ -8,7 +8,7 @@ writing our own client.
 import base64
 from urllib.parse import quote, urlencode
 
-from bibvpn.state import Node, User
+from bibvpn.state import Hub, Node, User
 from bibvpn.xray import VISION_FLOW
 
 
@@ -28,6 +28,9 @@ def _reality_params(node: Node) -> dict:
     }
 
 
+TRANSPORTS = ("vision", "xhttp")
+
+
 def vision_link(node: Node, user: User) -> str:
     params = {**_reality_params(node), "type": "tcp", "flow": VISION_FLOW}
     return _link(node, user, params, "vision")
@@ -43,10 +46,14 @@ def _link(node: Node, user: User, params: dict, transport: str) -> str:
     return f"vless://{user.uuid}@{_host(node)}:{node.port}?{urlencode(params, quote_via=quote)}#{label}"
 
 
+def node_links(node: Node, user: User) -> dict[str, str]:
+    return {"vision": vision_link(node, user), "xhttp": xhttp_link(node, user)}
+
+
 def user_links(nodes: list[Node], user: User) -> list[str]:
     links = []
     for node in nodes:
-        links += [vision_link(node, user), xhttp_link(node, user)]
+        links += node_links(node, user).values()
     return links
 
 
@@ -55,9 +62,12 @@ def subscription(nodes: list[Node], user: User) -> str:
     return base64.b64encode("\n".join(user_links(nodes, user)).encode()).decode()
 
 
-def client_xray_config(node: Node, user: User, transport: str, socks_port: int) -> dict:
-    """Minimal Xray client config (SOCKS in, one VLESS out). Used for smoke tests and
-    for headless Linux clients; GUI clients should import share links instead."""
+def subscription_url(hub: Hub, user: User) -> str:
+    return f"https://{hub.domain}/s/{user.sub_token}"
+
+
+def vless_outbound(node: Node, uuid: str, transport: str, tag: str | None = None) -> dict:
+    """Xray client outbound for one node and transport."""
     r = node.reality
     stream = {
         "security": "reality",
@@ -68,7 +78,7 @@ def client_xray_config(node: Node, user: User, transport: str, socks_port: int) 
             "shortId": r.short_ids[0],
         },
     }
-    user_entry = {"id": user.uuid, "encryption": "none"}
+    user_entry = {"id": uuid, "encryption": "none"}
     if transport == "vision":
         stream["network"] = "raw"
         user_entry["flow"] = VISION_FLOW
@@ -77,14 +87,21 @@ def client_xray_config(node: Node, user: User, transport: str, socks_port: int) 
         stream["xhttpSettings"] = {"path": node.xhttp_path, "mode": "auto"}
     else:
         raise ValueError(f"unknown transport {transport!r}")
+    outbound = {
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": node.host, "port": node.port, "users": [user_entry]}]},
+        "streamSettings": stream,
+    }
+    if tag:
+        outbound["tag"] = tag
+    return outbound
+
+
+def client_xray_config(node: Node, user: User, transport: str, socks_port: int) -> dict:
+    """Minimal Xray client config (SOCKS in, one VLESS out). Used for smoke tests and
+    for headless Linux clients; GUI clients should import share links instead."""
     return {
         "log": {"loglevel": "warning"},
         "inbounds": [{"listen": "127.0.0.1", "port": socks_port, "protocol": "socks", "settings": {"udp": True}}],
-        "outbounds": [
-            {
-                "protocol": "vless",
-                "settings": {"vnext": [{"address": node.host, "port": node.port, "users": [user_entry]}]},
-                "streamSettings": stream,
-            }
-        ],
+        "outbounds": [vless_outbound(node, user.uuid, transport)],
     }

@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+[Unit]
+Description=bibVPN monitor round (checks nodes, updates subscriptions, alerts)
+After=network-online.target bibvpn-probe.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ hub_monitor_user }}
+Group={{ hub_monitor_user }}
+ExecStart=/usr/bin/python3 {{ hub_lib_dir }}/monitor.py --config {{ hub_etc_dir }}/monitor.json --state-dir {{ hub_state_dir }}
+TimeoutStartSec=5min
+ReadWritePaths={{ hub_state_dir }} {{ hub_sub_dir }}
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077

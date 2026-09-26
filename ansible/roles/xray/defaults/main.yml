@@ -1,13 +1,1 @@
-# Pinned release. To upgrade: change both values (sha256 is the "SHA2-256" line of
-# https://github.com/XTLS/Xray-core/releases/download/<version>/Xray-linux-64.zip.dgst)
-# and run `bibvpn deploy`; nodes are updated one by one and the config is validated
-# with the new binary before the switch.
-xray_version: v26.9.9
-xray_arch_map:
-  x86_64: "64"
-  aarch64: arm64-v8a
-xray_sha256:
-  "64": 1eb9175d0f0a8f8149c9230a7fc5ae66ce332ed20a53155ce61fe62e3f58b7df
-  arm64-v8a: 3e38d72dfc5eb65c91df0e5583e9b6676c32232041da47de6ae73946b526d66c
-xray_base_dir: /opt/xray
 xray_config_dir: /usr/local/etc/xray

@@ -73,7 +73,7 @@ def test_render_all(tmp_path, s):
     render.render_all(s, tmp_path)
     inv = yaml.safe_load((tmp_path / "inventory.yml").read_text())
     host = inv["all"]["children"]["bibvpn_nodes"]["hosts"]["fi1"]
-    assert host["ansible_host"] == "198.51.100.7" and host["xray_public_ports"] == [443]
+    assert host["ansible_host"] == "198.51.100.7" and host["bibvpn_public_ports"] == [443]
     assert json.loads((tmp_path / "nodes/fi1/config.json").read_text())["inbounds"]
     assert (tmp_path / "clients/me.txt").exists()
     assert not (tmp_path / "clients/old.txt").exists()

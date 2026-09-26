@@ -1,0 +1,5 @@
+hub_monitor_user: bibvpn-monitor
+hub_etc_dir: /etc/bibvpn
+hub_sub_dir: /var/lib/bibvpn/subs
+hub_state_dir: /var/lib/bibvpn-monitor
+hub_lib_dir: /usr/local/lib/bibvpn

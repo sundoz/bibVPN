@@ -1,6 +1,7 @@
 """bibvpn command line: edit the state file, render configs, deploy."""
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -150,6 +151,107 @@ def _print_qr(text: str) -> None:
     qr.print_ascii(invert=True)
 
 
+def cmd_sub(args) -> int:
+    s = _load(args)
+    if not s.hub:
+        print("subscriptions need a hub: bibvpn hub set <IP of a server in Russia>")
+        return 1
+    url = links.subscription_url(s.hub, s.user(args.name))
+    print(url)
+    if args.qr:
+        _print_qr(url)
+    return 0
+
+
+def cmd_user_rotate_sub(args) -> int:
+    s = _load(args)
+    s.rotate_sub_token(args.name)
+    _save(args, s)
+    print(f"new subscription URL for {args.name} (the old one stops working after deploy):")
+    print(links.subscription_url(s.hub, s.user(args.name)) if s.hub else "(no hub configured)")
+    return 0
+
+
+def cmd_hub_set(args) -> int:
+    s = _load(args)
+    kwargs = {k: v for k, v in (("ssh_user", args.ssh_user), ("ssh_port", args.ssh_port), ("tls", args.tls),
+                                ("sub_update_hours", args.update_hours), ("sub_title", args.title)) if v is not None}
+    hub = s.set_hub(args.host, domain=args.domain, **kwargs)
+    _save(args, s)
+    print(f"hub {hub.host}, subscriptions at https://{hub.domain}/s/<token>")
+    print("next: bibvpn deploy")
+    return 0
+
+
+def cmd_hub_rm(args) -> int:
+    s = _load(args)
+    s.hub = None
+    _save(args, s)
+    print("hub removed from state (the server itself is untouched); run bibvpn deploy")
+    return 0
+
+
+def cmd_monitor_set(args) -> int:
+    s = _load(args)
+    m = s.monitor
+    for field, value in (
+        ("interval_min", args.interval), ("fail_threshold", args.threshold),
+        ("telegram_token", args.telegram_token), ("telegram_chat_id", args.telegram_chat_id),
+        ("telegram_api", args.telegram_api), ("small_url", args.small_url),
+        ("large_url", args.large_url), ("large_min_bytes", args.large_min_bytes),
+    ):
+        if value is not None:
+            setattr(m, field, value)
+    _save(args, s)
+    print("monitor settings saved; next: bibvpn deploy")
+    return 0
+
+
+def _hub_ssh(s: st.State, args, remote: str) -> list[str]:
+    cmd = ["ssh", "-p", str(s.hub.ssh_port)]
+    if args.identity:
+        cmd += ["-i", str(args.identity)]
+    for opt in args.ssh_options:
+        cmd += ["-o", opt]
+    return [*cmd, f"{s.hub.ssh_user}@{s.hub.host}", remote]
+
+
+def cmd_monitor_test(args) -> int:
+    s = _load(args)
+    if not s.hub:
+        print("no hub configured")
+        return 1
+    remote = "runuser -u bibvpn-monitor -- python3 /usr/local/lib/bibvpn/monitor.py --test-alert"
+    return subprocess.call(_hub_ssh(s, args, remote))
+
+
+STATUS_TEXT = {
+    "ok": "работает",
+    "unreachable": "порт недоступен из РФ (IP заблокирован или сервер выключен)",
+    "tunnel_failed": "туннель не устанавливается (блок протокола/SNI или Xray не запущен)",
+    "stalled": "загрузка замирает (заморозка после первых КБ, блок подсети хостинга)",
+}
+
+
+def cmd_status(args) -> int:
+    s = _load(args)
+    if not s.hub:
+        print("monitoring needs a hub: bibvpn hub set <IP of a server in Russia>")
+        return 1
+    remote = "cat /var/lib/bibvpn-monitor/status.json"
+    p = subprocess.run(_hub_ssh(s, args, remote), capture_output=True, text=True)
+    if p.returncode != 0:
+        print(f"cannot read status from the hub: {p.stderr.strip()}")
+        return 1
+    status = json.loads(p.stdout)
+    print(f"checked from the hub at {status['time']}")
+    for cid, r in status["checks"].items():
+        mark = "OK  " if r["status"] == "ok" else "FAIL"
+        extra = f"{r['latency_ms']} ms, {r['speed_kbps']} kbit/s" if r["status"] == "ok" else f"since {r['since']}"
+        print(f"  {mark} {cid:22} {STATUS_TEXT.get(r['status'], r['status'])}; {extra}")
+    return 0 if all(r["status"] == "ok" for r in status["checks"].values()) else 3
+
+
 def cmd_render(args) -> int:
     s = _load(args)
     for path in render.render_all(s, args.build_dir):
@@ -227,6 +329,48 @@ def build_parser() -> argparse.ArgumentParser:
         up = user.add_parser(verb)
         up.add_argument("name")
         up.set_defaults(func=cmd_user_set, enabled=value)
+
+    urs = user.add_parser("rotate-sub", help="new subscription URL (if the old one leaked)")
+    urs.add_argument("name")
+    urs.set_defaults(func=cmd_user_rotate_sub)
+
+    sb = sub.add_parser("sub", help="print a user's subscription URL (needs a hub)")
+    sb.add_argument("name")
+    sb.add_argument("--qr", action="store_true")
+    sb.set_defaults(func=cmd_sub)
+
+    hub = sub.add_parser("hub", help="subscription + monitoring server").add_subparsers(dest="hub_cmd", required=True)
+    hs = hub.add_parser("set", help="register the hub (ideally a VPS in Russia)")
+    hs.add_argument("host")
+    hs.add_argument("--domain", help="DNS name for HTTPS (default: <ip>.sslip.io)")
+    hs.add_argument("--ssh-user")
+    hs.add_argument("--ssh-port", type=int)
+    hs.add_argument("--tls", choices=st.TLS_MODES, help="internal = self-signed, tests only")
+    hs.add_argument("--update-hours", type=int, help="how often clients refresh the subscription")
+    hs.add_argument("--title", help="subscription name shown in clients")
+    hs.set_defaults(func=cmd_hub_set)
+    hub.add_parser("rm").set_defaults(func=cmd_hub_rm)
+
+    mon = sub.add_parser("monitor", help="monitoring settings").add_subparsers(dest="mon_cmd", required=True)
+    ms = mon.add_parser("set")
+    ms.add_argument("--interval", type=int, help="minutes between checks")
+    ms.add_argument("--threshold", type=int, help="failed rounds in a row before an alert")
+    ms.add_argument("--telegram-token", help="bot token from @BotFather")
+    ms.add_argument("--telegram-chat-id", help="your chat id (e.g. from @userinfobot)")
+    ms.add_argument("--telegram-api", help=argparse.SUPPRESS)
+    ms.add_argument("--small-url")
+    ms.add_argument("--large-url")
+    ms.add_argument("--large-min-bytes", type=int)
+    ms.set_defaults(func=cmd_monitor_set)
+    mt = mon.add_parser("test", help="send a test Telegram alert from the hub")
+    mt.add_argument("-i", "--identity", type=Path, help="SSH private key")
+    mt.add_argument("-o", dest="ssh_options", action="append", default=[], help="extra ssh -o option")
+    mt.set_defaults(func=cmd_monitor_test)
+
+    stt = sub.add_parser("status", help="latest check results from the hub")
+    stt.add_argument("-i", "--identity", type=Path, help="SSH private key")
+    stt.add_argument("-o", dest="ssh_options", action="append", default=[], help="extra ssh -o option")
+    stt.set_defaults(func=cmd_status)
 
     lk = sub.add_parser("links", help="print a user's share links")
     lk.add_argument("name")

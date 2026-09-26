@@ -1,39 +1,15 @@
-- name: Resolve release asset for this CPU
-  ansible.builtin.set_fact:
-    xray_arch: "{{ xray_arch_map[ansible_facts.architecture] }}"
-    xray_release_dir: "{{ xray_base_dir }}/{{ xray_version }}"
+- name: Xray binary (downloaded, not yet switched in)
+  ansible.builtin.include_role:
+    name: xray_bin
+    public: true
 
-- name: System user for Xray
-  ansible.builtin.user:
-    name: xray
-    system: true
-    shell: /usr/sbin/nologin
-    create_home: false
-
-- name: Directories
+- name: Config directory
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ xray_config_dir }}"
     state: directory
     owner: root
-    group: "{{ item.group }}"
-    mode: "{{ item.mode }}"
-  loop:
-    - { path: "{{ xray_release_dir }}", group: root, mode: "0755" }
-    - { path: "{{ xray_config_dir }}", group: xray, mode: "0750" }
-
-- name: Download pinned Xray release (checksum verified)
-  ansible.builtin.get_url:
-    url: "https://github.com/XTLS/Xray-core/releases/download/{{ xray_version }}/Xray-linux-{{ xray_arch }}.zip"
-    dest: "{{ xray_release_dir }}/xray.zip"
-    checksum: "sha256:{{ xray_sha256[xray_arch] }}"
-    mode: "0644"
-
-- name: Unpack release
-  ansible.builtin.unarchive:
-    src: "{{ xray_release_dir }}/xray.zip"
-    dest: "{{ xray_release_dir }}"
-    remote_src: true
-    creates: "{{ xray_release_dir }}/xray"
+    group: xray
+    mode: "0750"
 
 # The new config is validated by the binary being switched to, before either goes live.
 - name: Validate config against this release
@@ -44,11 +20,15 @@
     XRAY_LOCATION_ASSET: "{{ xray_release_dir }}"
   changed_when: false
 
-- name: Point "current" at this release
-  ansible.builtin.file:
-    src: "{{ xray_release_dir }}"
-    dest: "{{ xray_base_dir }}/current"
-    state: link
+- name: Switch to this release
+  ansible.builtin.include_role:
+    name: xray_bin
+    tasks_from: switch
+
+- name: Restart when a new release was switched in
+  ansible.builtin.debug:
+    msg: "Xray {{ xray_version }} is now current"
+  changed_when: xray_bin_switch.changed
   notify: Restart xray
 
 - name: Install config
@@ -85,4 +65,4 @@
   ansible.builtin.wait_for:
     port: "{{ item }}"
     timeout: 20
-  loop: "{{ xray_public_ports }}"
+  loop: "{{ bibvpn_public_ports }}"

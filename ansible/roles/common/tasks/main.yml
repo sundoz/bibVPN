@@ -42,12 +42,12 @@
 
 # SSH is allowed before the firewall is enabled, so we never cut ourselves off. No `ufw limit`:
 # it rejects Ansible's burst of connections; brute force is handled by fail2ban.
-- name: Firewall - allow SSH and proxy ports
+- name: Firewall - allow SSH and public ports
   ansible.builtin.command: "ufw {{ item }}"
-  loop: "{{ [common_ssh_rule] + common_proxy_rules }}"
+  loop: "{{ [common_ssh_rule] + common_public_rules }}"
   vars:
     common_ssh_rule: "allow {{ ansible_port | default(22) }}/tcp"
-    common_proxy_rules: "{{ xray_public_ports | map('string') | map('regex_replace', '^(.*)$', 'allow \\1/tcp') | list }}"
+    common_public_rules: "{{ bibvpn_public_ports | map('string') | map('regex_replace', '^(.*)$', 'allow \\1/tcp') | list }}"
   register: common_ufw_rule
   changed_when: "'Skipping' not in common_ufw_rule.stdout"
 

@@ -11,7 +11,7 @@ the node exposes nothing but what looks like a TLS 1.3 site:
   to an internal XHTTP inbound on an abstract unix socket.
 """
 
-from bibvpn.state import Node, State, User, is_ip
+from bibvpn.state import Node, State, is_ip
 
 API_LISTEN = "127.0.0.1:10085"
 XHTTP_SOCKET = "@bibvpn-xhttp"
@@ -40,10 +40,21 @@ def _reality(node: Node) -> dict:
     }
 
 
-def _clients(users: list[User], flow: str | None) -> list[dict]:
+MONITOR_EMAIL = "_monitor"
+
+
+def _identities(state: State) -> list[tuple[str, str]]:
+    """(email, uuid) of everyone allowed in: active users, plus the hub's probe."""
+    ids = [(u.name, u.uuid) for u in state.active_users()]
+    if state.hub:
+        ids.append((MONITOR_EMAIL, state.monitor.uuid))
+    return ids
+
+
+def _clients(identities: list[tuple[str, str]], flow: str | None) -> list[dict]:
     clients = []
-    for u in users:
-        client = {"id": u.uuid, "email": u.name, "level": 0}
+    for email, uuid in identities:
+        client = {"id": uuid, "email": email, "level": 0}
         if flow:
             client["flow"] = flow
         clients.append(client)
@@ -63,7 +74,7 @@ def _sniffing() -> dict:
 
 
 def render_server_config(state: State, node: Node) -> dict:
-    users = state.active_users()
+    users = _identities(state)
     return {
         # Access logs are off on purpose: we do not keep records of what users visit.
         "log": {"loglevel": "warning", "access": "none", "dnsLog": False},

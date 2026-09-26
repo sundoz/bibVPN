@@ -1,0 +1,8 @@
+# Run only after the consumer validated its config with the new release.
+- name: Point "current" at this release
+  ansible.builtin.file:
+    src: "{{ xray_release_dir }}"
+    dest: "{{ xray_base_dir }}/current"
+    state: link
+  # Roles that run Xray services check `xray_bin_switch.changed` to restart them.
+  register: xray_bin_switch

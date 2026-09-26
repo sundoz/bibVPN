@@ -1,0 +1,16 @@
+- name: Restart bibvpn-probe
+  ansible.builtin.systemd:
+    name: bibvpn-probe.service
+    state: restarted
+    daemon_reload: true
+
+- name: Restart bibvpn-monitor timer
+  ansible.builtin.systemd:
+    name: bibvpn-monitor.timer
+    state: restarted
+    daemon_reload: true
+
+- name: Reload caddy
+  ansible.builtin.systemd:
+    name: caddy
+    state: reloaded

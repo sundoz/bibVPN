@@ -44,3 +44,8 @@ def client_uuid() -> str:
 def random_path() -> str:
     """Unguessable HTTP path for XHTTP so the endpoint is not trivially probeable."""
     return "/" + secrets.token_urlsafe(12).replace("-", "").replace("_", "")[:16]
+
+
+def sub_token() -> str:
+    """Secret part of a subscription URL (192 bits)."""
+    return secrets.token_urlsafe(24)
