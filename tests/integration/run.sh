@@ -63,6 +63,10 @@ subcurl() { # request to the hub's HTTPS subscription endpoint
 start_vm() { # start_vm <name>: boot a container, install our key (and CA), print its IP
   docker run -d --name "$1" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw bibvpn-testnode >/dev/null
   docker cp "$WORK/id.pub" "$1:/root/.ssh/authorized_keys"
+  # docker cp keeps the caller's uid (non-root on CI runners); sshd ignores an
+  # authorized_keys file that root does not own.
+  docker exec "$1" chown root:root /root/.ssh/authorized_keys
+  docker exec "$1" chmod 600 /root/.ssh/authorized_keys
   until docker exec "$1" systemctl is-active -q ssh; do sleep 1; done
   if [[ -n "${EXTRA_CA:-}" ]]; then
     docker cp "$EXTRA_CA" "$1:/usr/local/share/ca-certificates/extra.crt"
