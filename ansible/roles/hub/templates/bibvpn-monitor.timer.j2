@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run the bibVPN monitor every {{ hub_monitor_interval_min }} min
+
+[Timer]
+OnBootSec=1min
+OnActiveSec=1min
+OnUnitInactiveSec={{ hub_monitor_interval_min }}min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

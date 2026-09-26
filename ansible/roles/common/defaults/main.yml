@@ -1,0 +1,11 @@
+# Disable SSH password login. Only turn this on after you can log in with a key,
+# otherwise you lock yourself out.
+common_ssh_disable_passwords: true
+common_packages:
+  - ca-certificates
+  - curl
+  - unzip
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - chrony

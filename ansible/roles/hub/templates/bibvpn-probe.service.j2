@@ -1,0 +1,44 @@
+# {{ ansible_managed }}
+# Local Xray client the monitor uses to test each node through a real tunnel.
+[Unit]
+Description=bibVPN probe client (Xray)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=xray
+Group=xray
+Environment=XRAY_LOCATION_ASSET={{ xray_base_dir }}/current
+ExecStart={{ xray_base_dir }}/current/xray run -config {{ hub_etc_dir }}/probe-xray.json
+Restart=always
+RestartSec=3
+CapabilityBoundingSet=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

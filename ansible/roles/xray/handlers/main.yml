@@ -1,0 +1,6 @@
+- name: Restart xray
+  ansible.builtin.systemd:
+    name: xray
+    state: restarted
+    daemon_reload: true
+  when: not ansible_check_mode
