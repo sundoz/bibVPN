@@ -67,16 +67,19 @@
 # it rejects Ansible's burst of connections; brute force is handled by fail2ban.
 - name: Firewall - allow SSH and public ports
   ansible.builtin.command: "ufw {{ item }}"
-  loop: "{{ [common_ssh_rule] + common_public_rules }}"
+  loop: "{{ [common_ssh_rule] + common_public_rules + common_public_udp_rules }}"
   vars:
     common_ssh_rule: "allow {{ ansible_port | default(22) }}/tcp"
     common_public_rules: "{{ bibvpn_public_ports | map('string') | map('regex_replace', '^(.*)$', 'allow \\1/tcp') | list }}"
+    common_public_udp_rules: "{{ bibvpn_public_udp_ports | default([]) | map('string') | map('regex_replace', '^(.*)$', 'allow \\1/udp') | list }}"
   register: common_ufw_rule
   changed_when: "'Skipping' not in common_ufw_rule.stdout"
 
 - name: Firewall - close ports of disabled services
-  ansible.builtin.command: "ufw delete allow {{ item }}/tcp"
-  loop: "{{ bibvpn_closed_ports | default([]) }}"
+  ansible.builtin.command: "ufw delete allow {{ item }}"
+  loop: >-
+    {{ (bibvpn_closed_ports | default([]) | map('string') | map('regex_replace', '$', '/tcp') | list)
+       + (bibvpn_closed_udp_ports | default([]) | map('string') | map('regex_replace', '$', '/udp') | list) }}
   register: common_ufw_closed
   changed_when: "'non-existent' not in common_ufw_closed.stdout"
 

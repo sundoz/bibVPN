@@ -3,7 +3,7 @@
 # (one exit node, one hub):
 #   1. `bibvpn deploy` provisions both from scratch;
 #   2. a second deploy must change nothing (idempotency);
-#   3. a real Xray client connects through both transports (Vision and XHTTP);
+#   3. a real Xray client connects through all three transports (Vision, XHTTP, Hysteria2);
 #   4. an unauthenticated TLS probe sees the impersonated site's certificate;
 #   5. security: password SSH is off (even with a cloud-init drop-in saying otherwise),
 #      only the expected ports are open, the Xray sandbox scores well, and tunnel
@@ -118,6 +118,7 @@ s = st.load(Path(sys.argv[1]))
 text = Path(sys.argv[2]).read_text()
 secrets = [n.reality.private_key for n in s.nodes] + [u.uuid for u in s.users] + [s.monitor.uuid]
 secrets += [u.sub_token for u in s.users] + ([s.monitor.telegram_token] if s.monitor.telegram_token else [])
+secrets += [n.hy2.key_pem.splitlines()[1] for n in s.nodes if n.hy2]
 found = [x[:6] + "..." for x in secrets if x in text]
 print(" ".join(found))
 sys.exit(0 if found else 1)
@@ -137,7 +138,7 @@ echo "== 2. second deploy is a no-op"
 $BIBVPN deploy --private-key "$WORK/id" > "$WORK/deploy2.log"
 [[ $(grep -c "changed=0 .*failed=0" "$WORK/deploy2.log") == 2 ]] || { tail -30 "$WORK/deploy2.log"; fail "not idempotent"; }
 
-echo "== 3. client connects through both transports"
+echo "== 3. client connects through all transports"
 "$ROOT/.venv/bin/python" - "$WORK" <<'PY'
 import json, sys
 from pathlib import Path
@@ -146,15 +147,15 @@ from bibvpn.links import client_xray_config
 work = Path(sys.argv[1])
 s = st.load(work / "state.yml")
 node, user = s.node("node1"), s.user("alice")
-for transport, port in (("vision", 31080), ("xhttp", 31081)):
+for transport, port in (("vision", 31080), ("xhttp", 31081), ("hy2", 31082)):
     (work / f"client-{transport}.json").write_text(json.dumps(client_xray_config(node, user, transport, port)))
 PY
-for t in vision xhttp; do
+for t in vision xhttp hy2; do
   xray run -c "$WORK/client-$t.json" > "$WORK/client-$t.log" 2>&1 &
   CLIENT_PIDS+=($!)
 done
 sleep 2
-for port in 31080 31081; do
+for port in 31080 31081 31082; do
   code=$(fetch $port)
   echo "  socks :$port -> $code"
   [[ "$code" == 200 ]] || fail "tunnel on :$port"
@@ -173,7 +174,7 @@ for vm in "$NODE" "$HUB"; do
   docker exec "$vm" fail2ban-client status sshd >/dev/null || fail "$vm: fail2ban sshd jail not running"
 done
 open_ports=$(docker exec "$NODE" ufw status | awk '/ALLOW/ && !/v6/ {print $1}' | sort | tr '\n' ' ')
-[[ "$open_ports" == "22/tcp 443/tcp " ]] || fail "node: unexpected open ports: $open_ports"
+[[ "$open_ports" == "22/tcp 443/tcp 443/udp " ]] || fail "node: unexpected open ports: $open_ports"
 open_ports=$(docker exec "$HUB" ufw status | awk '/ALLOW/ && !/v6/ {print $1}' | sort | tr '\n' ' ')
 [[ "$open_ports" == "22/tcp 443/tcp 80/tcp " ]] || fail "hub: unexpected open ports: $open_ports"
 [[ $(docker exec "$NODE" ps -o user= -C xray) == xray ]] || fail "xray not running as its own user"
@@ -200,6 +201,7 @@ grep -qi "^profile-update-interval: 3" <<<"$headers" || fail "no Profile-Update-
 decoded=$(base64 -d "$WORK/sub.b64")
 ALICE_UUID=$("$ROOT/.venv/bin/python" -c "from bibvpn import state as st; from pathlib import Path; print(st.load(Path('$WORK/state.yml')).user('alice').uuid)")
 [[ $(grep -c "^vless://$ALICE_UUID@$IP:443" <<<"$decoded") == 2 ]] || { echo "$decoded"; fail "subscription content"; }
+grep -q "^hysteria2://$ALICE_UUID@$IP:443/?.*pinSHA256=" <<<"$decoded" || { echo "$decoded"; fail "hy2 link missing"; }
 [[ $(subcurl -o /dev/null -w "%{http_code}" "https://$HUB_DOMAIN/s/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == 404 ]] || fail "unknown token not 404"
 [[ $(subcurl -o /dev/null -w "%{http_code}" "https://$HUB_DOMAIN/") == 404 ]] || fail "root not 404"
 [[ $(subcurl -o /dev/null -w "%{http_code}" "https://$HUB_DOMAIN/s/") == 404 ]] || fail "directory listing"
@@ -233,7 +235,7 @@ echo "== 9. disabled user is cut off"
 $BIBVPN user disable alice
 $BIBVPN deploy --private-key "$WORK/id" > "$WORK/deploy3.log"
 sleep 2
-for port in 31080 31081; do
+for port in 31080 31081 31082; do
   code=$(fetch $port)
   [[ "$code" == 000 ]] || fail "disabled user still has access on :$port ($code)"
 done
@@ -248,8 +250,10 @@ docker exec "$NODE" systemctl is-active -q xray && fail "xray still running on d
 docker exec "$NODE" systemctl is-enabled -q xray && fail "xray still enabled on disabled node"
 docker exec "$NODE" test -e /usr/local/etc/xray/config.json && fail "config with keys left on disabled node"
 docker exec "$NODE" ufw status | grep -q "^443/tcp" && fail "port 443 still open on disabled node"
+docker exec "$NODE" ufw status | grep -q "^443/udp" && fail "UDP 443 (hy2) still open on disabled node"
 timeout 5 bash -c "echo > /dev/tcp/$IP/443" 2>/dev/null && fail "port 443 still answers"
 [[ $(fetch 31080) == 000 ]] || fail "old link still works on disabled node"
+[[ $(fetch 31082) == 000 ]] || fail "old hy2 link still works on disabled node"
 $BIBVPN node rm node1 || fail "node rm after disable"
 echo "  ok"
 

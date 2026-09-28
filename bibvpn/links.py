@@ -28,9 +28,6 @@ def _reality_params(node: Node) -> dict:
     }
 
 
-TRANSPORTS = ("vision", "xhttp")
-
-
 def vision_link(node: Node, user: User) -> str:
     params = {**_reality_params(node), "type": "tcp", "flow": VISION_FLOW}
     return _link(node, user, params, "vision")
@@ -46,8 +43,20 @@ def _link(node: Node, user: User, params: dict, transport: str) -> str:
     return f"vless://{user.uuid}@{_host(node)}:{node.port}?{urlencode(params, quote_via=quote)}#{label}"
 
 
+def hy2_link(node: Node, user: User) -> str:
+    """Hysteria2 URI (the format of the official client, read by Hiddify, NekoBox,
+    v2rayN/v2rayNG, Happ, Streisand...). The certificate is self-signed: pinSHA256 is
+    what authenticates the server; insecure=1 only tells clients not to look for a CA."""
+    params = {"sni": node.reality.sni, "alpn": "h3", "insecure": "1", "pinSHA256": node.hy2.pin_sha256}
+    label = quote(f"bib-{node.name}-hy2")
+    return f"hysteria2://{user.uuid}@{_host(node)}:{node.hy2.port}/?{urlencode(params, quote_via=quote)}#{label}"
+
+
+_LINKS = {"vision": vision_link, "xhttp": xhttp_link, "hy2": hy2_link}
+
+
 def node_links(node: Node, user: User) -> dict[str, str]:
-    return {"vision": vision_link(node, user), "xhttp": xhttp_link(node, user)}
+    return {t: _LINKS[t](node, user) for t in node.transports()}
 
 
 def user_links(nodes: list[Node], user: User) -> list[str]:
@@ -66,8 +75,34 @@ def subscription_url(hub: Hub, user: User) -> str:
     return f"https://{hub.domain}/s/{user.sub_token}"
 
 
-def vless_outbound(node: Node, uuid: str, transport: str, tag: str | None = None) -> dict:
+def client_outbound(node: Node, uuid: str, transport: str, tag: str | None = None) -> dict:
     """Xray client outbound for one node and transport."""
+    if transport == "hy2":
+        outbound = hy2_outbound(node, uuid)
+        if tag:
+            outbound["tag"] = tag
+        return outbound
+    return vless_outbound(node, uuid, transport, tag)
+
+
+def hy2_outbound(node: Node, uuid: str) -> dict:
+    return {
+        "protocol": "hysteria",
+        "settings": {"version": 2, "address": node.host, "port": node.hy2.port},
+        "streamSettings": {
+            "network": "hysteria",
+            "hysteriaSettings": {"version": 2, "auth": uuid},
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": node.reality.sni,
+                "alpn": ["h3"],
+                "pinnedPeerCertSha256": node.hy2.pin_sha256,
+            },
+        },
+    }
+
+
+def vless_outbound(node: Node, uuid: str, transport: str, tag: str | None = None) -> dict:
     r = node.reality
     stream = {
         "security": "reality",
@@ -103,5 +138,5 @@ def client_xray_config(node: Node, user: User, transport: str, socks_port: int) 
     return {
         "log": {"loglevel": "warning"},
         "inbounds": [{"listen": "127.0.0.1", "port": socks_port, "protocol": "socks", "settings": {"udp": True}}],
-        "outbounds": [vless_outbound(node, user.uuid, transport)],
+        "outbounds": [client_outbound(node, user.uuid, transport)],
     }

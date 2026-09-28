@@ -23,7 +23,8 @@ def s():
 
 def test_server_config_single_port_with_xhttp_fallback(s):
     cfg = render_server_config(s, s.node("fi1"))
-    vision, xhttp = cfg["inbounds"]
+    vision, xhttp, hy2 = cfg["inbounds"]
+    assert hy2["protocol"] == "hysteria" and hy2["port"] == 443
     assert vision["port"] == 443
     assert vision["settings"]["fallbacks"] == [{"dest": XHTTP_SOCKET, "xver": 0}]
     assert vision["streamSettings"]["realitySettings"]["target"] == "www.example.org:443"
@@ -46,7 +47,11 @@ def test_no_access_log(s):
 
 def test_links(s):
     node, user = s.node("fi1"), s.user("me")
-    vision, xhttp = links.user_links([node], user)
+    vision, xhttp, hy2 = links.user_links([node], user)
+    h = urlsplit(hy2)
+    assert h.scheme == "hysteria2" and h.username == user.uuid and h.port == 443
+    hq = parse_qs(h.query)
+    assert hq["pinSHA256"] == [node.hy2.pin_sha256] and hq["sni"] == ["www.example.org"] and hq["alpn"] == ["h3"]
     for link in (vision, xhttp):
         u = urlsplit(link)
         assert u.scheme == "vless" and u.username == user.uuid

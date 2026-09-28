@@ -4,7 +4,7 @@
 For every node and transport it checks, from inside Russia:
 
 1. TCP connect to node:443                 fails -> "unreachable"
-   (IP/subnet blocked, or the server is down)
+   (IP/subnet blocked, or the server is down; skipped for UDP/Hysteria2)
 2. a small HTTPS request through the tunnel fails -> "tunnel_failed"
    (protocol / SNI / fingerprint blocked, or Xray is not running)
 3. a ~1 MB download through the tunnel      stalls -> "stalled"
@@ -76,10 +76,13 @@ def run_curl(args: list[str], stdin: str | None = None, timeout: float = 60) -> 
 def probe(check: dict, cfg: dict, tcp=tcp_connect, curl=run_curl) -> dict:
     """Run the three-step check for one node+transport and classify the result."""
     result = {"status": OK, "tcp_ms": None, "latency_ms": None, "speed_kbps": None}
-    result["tcp_ms"] = tcp(check["host"], check["port"])
-    if result["tcp_ms"] is None:
-        result["status"] = UNREACHABLE
-        return result
+    # UDP transports (Hysteria2) cannot be port-checked without speaking the protocol;
+    # for them a failed tunnel covers "unreachable" too.
+    if not check.get("udp"):
+        result["tcp_ms"] = tcp(check["host"], check["port"])
+        if result["tcp_ms"] is None:
+            result["status"] = UNREACHABLE
+            return result
 
     # -L: test URLs often redirect (CDNs, release downloads); a redirect is not a failure.
     socks = ["--socks5-hostname", f"127.0.0.1:{check['socks_port']}", "-L", "--max-redirs", "3"]

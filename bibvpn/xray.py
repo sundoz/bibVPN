@@ -9,6 +9,10 @@ the node exposes nothing but what looks like a TLS 1.3 site:
   later be moved behind a CDN. After the Reality handshake, anything that is not a
   VLESS header (i.e. the HTTP/2 preface of an XHTTP client) is handed via `fallbacks`
   to an internal XHTTP inbound on an abstract unix socket.
+
+Plus, on UDP 443, Hysteria2 (QUIC): a different network path for when TCP to the node
+is throttled or frozen. To the DPI it is HTTP/3 to the same `reality.sni`; probes
+without the password are proxied to that real site (masquerade).
 """
 
 from bibvpn.state import Node, State, is_ip
@@ -79,8 +83,61 @@ def _sniffing() -> dict:
     return {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
 
 
+def _hy2_inbound(node: Node, users: list[tuple[str, str]]) -> dict:
+    h = node.hy2
+    return {
+        "tag": "hy2",
+        "listen": PUBLIC_LISTEN,
+        "port": h.port,
+        "protocol": "hysteria",
+        # Each user's password is their UUID, like on the VLESS inbounds.
+        "settings": {"version": 2, "clients": [{"auth": uuid, "email": email, "level": 0} for email, uuid in users]},
+        "streamSettings": {
+            "network": "hysteria",
+            "hysteriaSettings": {
+                "version": 2,
+                "masquerade": {"type": "proxy", "url": f"https://{node.reality.sni}/", "rewriteHost": True},
+            },
+            "security": "tls",
+            "tlsSettings": {
+                "alpn": ["h3"],
+                "certificates": [{"certificate": h.cert_pem.splitlines(), "key": h.key_pem.splitlines()}],
+            },
+        },
+        "sniffing": _sniffing(),
+    }
+
+
 def render_server_config(state: State, node: Node) -> dict:
     users = _identities(state)
+    inbounds = [
+        {
+            "tag": "vless-vision",
+            "listen": PUBLIC_LISTEN,
+            "port": node.port,
+            "protocol": "vless",
+            "settings": {
+                "clients": _clients(users, VISION_FLOW),
+                "decryption": "none",
+                "fallbacks": [{"dest": XHTTP_SOCKET, "xver": 0}],
+            },
+            "streamSettings": {"network": "raw", "security": "reality", "realitySettings": _reality(node)},
+            "sniffing": _sniffing(),
+        },
+        {
+            "tag": "vless-xhttp",
+            "listen": XHTTP_SOCKET,
+            "protocol": "vless",
+            "settings": {"clients": _clients(users, None), "decryption": "none"},
+            "streamSettings": {
+                "network": "xhttp",
+                "xhttpSettings": {"path": node.xhttp_path, "mode": "auto"},
+            },
+            "sniffing": _sniffing(),
+        },
+    ]
+    if node.hy2 and node.hy2.enabled:
+        inbounds.append(_hy2_inbound(node, users))
     return {
         # Access logs are off on purpose: we do not keep records of what users visit.
         "log": {"loglevel": "warning", "access": "none", "dnsLog": False},
@@ -90,32 +147,7 @@ def render_server_config(state: State, node: Node) -> dict:
             "levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}},
             "system": {"statsInboundUplink": True, "statsInboundDownlink": True},
         },
-        "inbounds": [
-            {
-                "tag": "vless-vision",
-                "listen": PUBLIC_LISTEN,
-                "port": node.port,
-                "protocol": "vless",
-                "settings": {
-                    "clients": _clients(users, VISION_FLOW),
-                    "decryption": "none",
-                    "fallbacks": [{"dest": XHTTP_SOCKET, "xver": 0}],
-                },
-                "streamSettings": {"network": "raw", "security": "reality", "realitySettings": _reality(node)},
-                "sniffing": _sniffing(),
-            },
-            {
-                "tag": "vless-xhttp",
-                "listen": XHTTP_SOCKET,
-                "protocol": "vless",
-                "settings": {"clients": _clients(users, None), "decryption": "none"},
-                "streamSettings": {
-                    "network": "xhttp",
-                    "xhttpSettings": {"path": node.xhttp_path, "mode": "auto"},
-                },
-                "sniffing": _sniffing(),
-            },
-        ],
+        "inbounds": inbounds,
         "outbounds": [
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},

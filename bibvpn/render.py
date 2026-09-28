@@ -25,6 +25,7 @@ def render_inventory(state: State, build_dir: Path) -> dict:
     # Disabled nodes stay in the inventory: deploy must actively stop Xray there and
     # delete its config, or the server would keep accepting the old links.
     for node in state.nodes:
+        hy2_on = bool(node.enabled and node.hy2 and node.hy2.enabled)
         host = {
             "ansible_host": node.host,
             "ansible_user": node.ssh_user,
@@ -33,6 +34,9 @@ def render_inventory(state: State, build_dir: Path) -> dict:
             "bibvpn_node_enabled": node.enabled,
             "bibvpn_public_ports": [node.port] if node.enabled else [],
             "bibvpn_closed_ports": [] if node.enabled else [node.port],
+            # Hysteria2 listens on UDP; closed again when the node or hy2 is turned off.
+            "bibvpn_public_udp_ports": [node.hy2.port] if hy2_on else [],
+            "bibvpn_closed_udp_ports": [node.hy2.port] if node.hy2 and not hy2_on else [],
         }
         if node.enabled:
             host["xray_config_src"] = str((build_dir / "nodes" / node.name / "config.json").resolve())
