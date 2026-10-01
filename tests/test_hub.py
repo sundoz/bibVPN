@@ -119,8 +119,16 @@ def test_monitor_identity_only_with_hub(s):
 
 def test_probe_checks_cover_every_node_and_transport(s):
     checks = hub.probe_checks(s)
-    assert [c["id"] for c in checks] == ["fi1/vision", "fi1/xhttp", "nl1/vision", "nl1/xhttp"]
-    assert len({c["socks_port"] for c in checks}) == 4
+    assert [c["id"] for c in checks] == [
+        "fi1/vision", "fi1/xhttp", "fi1/hy2", "nl1/vision", "nl1/xhttp", "nl1/hy2",
+    ]
+    assert len({c["socks_port"] for c in checks}) == 6
+    assert [c["udp"] for c in checks if c["node"] == "fi1"] == [False, False, True]
+
+
+def test_hy2_can_be_turned_off(s):
+    s.node("nl1").hy2.enabled = False
+    assert [c["id"] for c in hub.probe_checks(s) if c["node"] == "nl1"] == ["nl1/vision", "nl1/xhttp"]
 
 
 def test_probe_config_routes_each_port_to_its_node(s):
@@ -129,7 +137,10 @@ def test_probe_config_routes_each_port_to_its_node(s):
     out = {o["tag"]: o for o in cfg["outbounds"]}
     for rule in cfg["routing"]["rules"][:-1]:
         o = out[rule["outboundTag"]]
-        assert o["settings"]["vnext"][0]["users"][0]["id"] == s.monitor.uuid
+        if o["protocol"] == "hysteria":
+            assert o["streamSettings"]["hysteriaSettings"]["auth"] == s.monitor.uuid
+        else:
+            assert o["settings"]["vnext"][0]["users"][0]["id"] == s.monitor.uuid
     assert cfg["routing"]["rules"][-1]["outboundTag"] == "block"
 
 

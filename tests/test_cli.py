@@ -22,7 +22,8 @@ def test_workflow(run, capsys):
     capsys.readouterr()
     assert run("links", "me") == 0
     out = capsys.readouterr().out.splitlines()
-    assert len(out) == 2 and all(line.startswith("vless://") for line in out)
+    assert len(out) == 3
+    assert [line.split("://")[0] for line in out] == ["vless", "vless", "hysteria2"]
     assert run("user", "disable", "me") == 0
     assert st.load(run.state_path).user("me").enabled is False
     assert run("render") == 0

@@ -74,6 +74,26 @@ class Reality:
 
 
 @dataclass
+class Hy2:
+    """Hysteria2 (QUIC over UDP): the fallback for when TCP to the node is throttled.
+
+    The certificate is self-signed; clients pin its SHA-256, so no domain is needed.
+    Unauthenticated HTTP/3 probes are proxied to the Reality SNI site (masquerade).
+    """
+
+    cert_pem: str
+    key_pem: str
+    pin_sha256: str
+    port: int = 443  # UDP; does not clash with TCP 443
+    enabled: bool = True
+
+    @classmethod
+    def generate(cls, name: str, **kwargs) -> "Hy2":
+        cert_pem, key_pem, pin = keys.hy2_certificate(name)
+        return cls(cert_pem=cert_pem, key_pem=key_pem, pin_sha256=pin, **kwargs)
+
+
+@dataclass
 class Node:
     name: str
     host: str
@@ -87,6 +107,10 @@ class Node:
     port: int = 443
     xhttp_path: str = "/"
     enabled: bool = True
+    hy2: Hy2 | None = None
+
+    def transports(self) -> tuple[str, ...]:
+        return ("vision", "xhttp") + (("hy2",) if self.hy2 and self.hy2.enabled else ())
 
 
 @dataclass
@@ -166,21 +190,25 @@ class State:
 
     # --- mutation ---------------------------------------------------------
 
-    def add_node(self, name: str, host: str, sni: str, **kwargs) -> Node:
+    def add_node(self, name: str, host: str, sni: str, hy2: bool = True, **kwargs) -> Node:
         check_name("node", name)
         if any(n.name == name for n in self.nodes):
             raise StateError(f"node {name} already exists")
+        sni = sni.strip().lower()
+        # Checked before anything is generated from it (the hy2 certificate uses it).
+        _require(bool(HOSTNAME_RE.fullmatch(sni)), f"node {name!r}: sni must be a hostname like www.example.org")
         private_key, public_key = keys.reality_keypair()
         node = Node(
             name=name,
             host=host.strip().lower(),
             reality=Reality(
-                sni=sni.strip().lower(),
+                sni=sni,
                 private_key=private_key,
                 public_key=public_key,
                 short_ids=[keys.short_id()],
             ),
             xhttp_path=keys.random_path(),
+            hy2=Hy2.generate(sni, enabled=hy2),
             **kwargs,
         )
         self.nodes.append(node)
@@ -227,6 +255,15 @@ class State:
         node = self.node(name)
         node.reality.private_key, node.reality.public_key = keys.reality_keypair()
         node.reality.short_ids = [keys.short_id()]
+        self.renew_hy2_cert(name)
+        return node
+
+    def renew_hy2_cert(self, name: str) -> Node:
+        """New Hysteria2 certificate (its pin is in every hy2 link for this node)."""
+        node = self.node(name)
+        enabled = node.hy2.enabled if node.hy2 else True
+        port = node.hy2.port if node.hy2 else 443
+        node.hy2 = Hy2.generate(node.reality.sni, enabled=enabled, port=port)
         return node
 
     # --- validation ---------------------------------------------------------
@@ -260,6 +297,17 @@ class State:
             except ValueError as e:
                 raise StateError(f"{where}: bad Reality private key: {e}") from None
             _require(derived == n.reality.public_key, f"{where}: Reality public key does not match private key")
+            if n.hy2:
+                h = n.hy2
+                _require(isinstance(h.port, int) and 1 <= h.port <= 65535, f"{where}: invalid hy2 port")
+                _require(isinstance(h.enabled, bool), f"{where}: hy2.enabled must be true/false")
+                try:
+                    pin_ok = keys.cert_pin(h.cert_pem) == h.pin_sha256
+                    key_ok = keys.cert_matches_key(h.cert_pem, h.key_pem)
+                except (ValueError, TypeError) as e:
+                    raise StateError(f"{where}: bad hy2 certificate or key: {e}") from None
+                _require(pin_ok, f"{where}: hy2 pin_sha256 does not match the certificate")
+                _require(key_ok, f"{where}: hy2 key does not match the certificate")
         _require(len({u.sub_token for u in self.users}) == len(self.users), "duplicate subscription tokens")
         for u in self.users:
             check_name("user", u.name)
@@ -301,6 +349,8 @@ class State:
             for raw in data.get("nodes") or []:
                 raw = dict(raw)
                 raw["reality"] = Reality(**raw["reality"])
+                if raw.get("hy2"):
+                    raw["hy2"] = Hy2(**raw["hy2"])
                 nodes.append(Node(**raw))
             users = [User(**raw) for raw in data.get("users") or []]
             hub = Hub(**data["hub"]) if data.get("hub") else None
@@ -327,8 +377,13 @@ def load(path: Path) -> State:
     if not isinstance(data, dict):
         raise StateError(f"{path} is not a bibvpn state file")
     state = State.from_dict(data)
+    # Nodes created before Hysteria2 existed get a certificate once.
+    for raw, node in zip(data.get("nodes") or [], state.nodes):
+        if "hy2" not in raw:
+            node.hy2 = Hy2.generate(node.reality.sni)
     # Fields added after a file was written get generated defaults (subscription
-    # tokens, monitor identity). Persist them now, or they would change on every run.
+    # tokens, monitor identity, hy2 certificates). Persist them now, or they would
+    # change on every run.
     if _missing_fields(data):
         save(state, path)
     return state
@@ -336,6 +391,8 @@ def load(path: Path) -> State:
 
 def _missing_fields(data: dict) -> bool:
     if "monitor" not in data or "uuid" not in (data.get("monitor") or {}):
+        return True
+    if any("hy2" not in n for n in data.get("nodes") or []):
         return True
     return any("sub_token" not in u for u in data.get("users") or [])
 

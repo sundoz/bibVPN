@@ -2,7 +2,7 @@
 
 import base64
 
-from bibvpn.links import TRANSPORTS, node_links, vless_outbound
+from bibvpn.links import client_outbound, node_links
 from bibvpn.state import State
 
 PROBE_BASE_PORT = 21000
@@ -13,14 +13,18 @@ def probe_checks(state: State) -> list[dict]:
     """One check per active node and transport, each with its own local SOCKS port."""
     checks = []
     for node in state.active_nodes():
-        for transport in TRANSPORTS:
+        for transport in node.transports():
+            udp = transport == "hy2"
             checks.append(
                 {
                     "id": f"{node.name}/{transport}",
                     "node": node.name,
                     "transport": transport,
                     "host": node.host,
-                    "port": node.port,
+                    "port": node.hy2.port if udp else node.port,
+                    # UDP has no handshake to test without the protocol itself, so the
+                    # monitor skips the port check and goes straight to the tunnel.
+                    "udp": udp,
                     "socks_port": PROBE_BASE_PORT + len(checks),
                 }
             )
@@ -36,7 +40,7 @@ def probe_xray_config(state: State) -> dict:
         inbounds.append(
             {"tag": f"in-{tag}", "listen": "127.0.0.1", "port": c["socks_port"], "protocol": "socks", "settings": {}}
         )
-        outbounds.append(vless_outbound(nodes[c["node"]], state.monitor.uuid, c["transport"], tag=f"out-{tag}"))
+        outbounds.append(client_outbound(nodes[c["node"]], state.monitor.uuid, c["transport"], tag=f"out-{tag}"))
         rules.append({"inboundTag": [f"in-{tag}"], "outboundTag": f"out-{tag}"})
     # Traffic that matches no rule is dropped instead of leaving the hub directly.
     outbounds.append({"tag": "block", "protocol": "blackhole"})

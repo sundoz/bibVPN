@@ -53,7 +53,8 @@ def cmd_node_add(args) -> int:
             print("choose another --sni, or pass --force if the check cannot run from here")
             return 1
     node = s.add_node(
-        args.name, args.host, sni=args.sni, ssh_user=args.ssh_user, ssh_port=args.ssh_port, port=args.port
+        args.name, args.host, sni=args.sni, hy2=args.hy2, ssh_user=args.ssh_user, ssh_port=args.ssh_port,
+        port=args.port,
     )
     _save(args, s)
     print(f"added node {node.name} ({node.host}), impersonating {node.reality.sni}")
@@ -64,7 +65,8 @@ def cmd_node_add(args) -> int:
 def cmd_node_list(args) -> int:
     for n in _load(args).nodes:
         flag = "" if n.enabled else "  [disabled]"
-        print(f"{n.name:12} {n.host:40} :{n.port}  sni={n.reality.sni}  role={n.role}{flag}")
+        hy2 = f"hy2=udp/{n.hy2.port}" if n.hy2 and n.hy2.enabled else "hy2=off"
+        print(f"{n.name:12} {n.host:40} :{n.port}  sni={n.reality.sni}  {hy2}  role={n.role}{flag}")
     return 0
 
 
@@ -93,10 +95,16 @@ def cmd_node_set(args) -> int:
             print("deleted and port closed: all links to it stop working. It also leaves")
             print("subscriptions and monitoring.")
     if args.sni:
-        node.reality.sni = args.sni
+        node.reality.sni = args.sni.strip().lower()
+        s.renew_hy2_cert(args.name)  # the certificate carries the SNI name
+    if args.hy2 is not None:
+        if node.hy2 is None:
+            s.renew_hy2_cert(args.name)
+        node.hy2.enabled = args.hy2
     if args.rotate_keys:
         s.rotate_node_keys(args.name)
-        print("new Reality keys generated: every user must re-import links for this node")
+        print("new Reality keys and hy2 certificate: links for this node change")
+        print("(subscriptions update by themselves; plain links must be re-imported)")
     _save(args, s)
     print("updated; next: bibvpn deploy")
     return 0
@@ -316,6 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     na.add_argument("--ssh-port", type=int, default=22)
     na.add_argument("--port", type=int, default=443, help="public port (keep 443 unless you must)")
     na.add_argument("--force", action="store_true", help="skip the SNI check")
+    na.add_argument("--no-hy2", dest="hy2", action="store_false", help="do not enable Hysteria2 (UDP 443)")
     na.set_defaults(func=cmd_node_add)
     node.add_parser("list").set_defaults(func=cmd_node_list)
     nr = node.add_parser("rm", help="forget a node (disable + deploy it first)")
@@ -330,7 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="next deploy stops Xray there and deletes its config; links stop working",
     )
     ns.add_argument("--sni")
-    ns.add_argument("--rotate-keys", action="store_true", help="new Reality keys (invalidates links)")
+    ns.add_argument("--rotate-keys", action="store_true", help="new Reality keys and hy2 cert (invalidates links)")
+    ns.add_argument("--hy2", dest="hy2", action="store_const", const=True, help="enable Hysteria2 (UDP)")
+    ns.add_argument("--no-hy2", dest="hy2", action="store_const", const=False, help="disable Hysteria2")
     ns.set_defaults(func=cmd_node_set)
 
     user = sub.add_parser("user", help="manage users").add_subparsers(dest="user_cmd", required=True)

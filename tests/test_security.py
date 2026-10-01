@@ -178,11 +178,14 @@ def test_abuse_blocking(s):
     assert "25" in BLOCKED_PORTS.split(",")
 
 
-def test_only_one_public_listener(s):
+def test_only_expected_public_listeners(s):
     cfg = render_server_config(s, s.node("fi1"))
     public = [i for i in cfg["inbounds"] if i["listen"] in ("0.0.0.0", "::")]
-    assert len(public) == 1 and public[0]["port"] == 443
+    # One TCP listener (Reality) and one UDP listener (Hysteria2), both on 443.
+    assert [(i["protocol"], i["port"]) for i in public] == [("vless", 443), ("hysteria", 443)]
     assert public[0]["streamSettings"]["security"] == "reality"
+    hy2 = public[1]["streamSettings"]
+    assert hy2["security"] == "tls" and hy2["hysteriaSettings"]["masquerade"]["type"] == "proxy"
 
 
 def test_api_is_loopback_only(s):
